@@ -86,6 +86,7 @@ ebd <- zero_spp %>%
 rm(ebdmd, ebddc, sens, zero_spp)
 
 # Standardize dataset ---------------------------------------------------------
+# change NAs in breeding_category column to C1
 # add columns to ebd dataset for
 ## block name
 ## block county
@@ -99,9 +100,19 @@ rm(ebdmd, ebddc, sens, zero_spp)
 ## effort at the block level
 ## nocturnal effort at the block level
 
+# o Standardize breeding_category ---------------------------------------------
+# change breeding_category NAs to C1 because all of those observations are 
+# uncoded and therefore "Observed" (or C1) observations, but eBird only applies
+# C1 to observations with code F.
+ebd$breeding_category[is.na(ebd$breeding_category)] <- "C1"
+
+# MD-DC atlas interprets code PE as Probable, not Confirmed breeding evidence,
+# but eBird interprets PE as Confirmed, so update ebd to match MD-DC project.
+ebd$breeding_category[which(ebd$breeding_code == "PE")] <- "C3"
+
 # o Add block info ------------------------------------------------------------
 # edit the block codes to match partial blocks in ebird, which start with "o"
-partialblocks <- unique(ebd[grep("o", ebd$atlas_block), "atlas_block"])
+partialblocks <- unlist(unique(ebd[grep("o", ebd$atlas_block), "atlas_block"]))
 
 partialblocks <- gsub("o", "", partialblocks)
 
@@ -120,11 +131,19 @@ ebd <- ebd %>%
                          "block_name",
                          "region")], 
             by = c("atlas_block" = "usgs_block_code")) %>%
-  rename(block_county = region) %>%
-  # check if location is at the block level and mark it as such
-  mutate(block_level = case_when(
-    ebd$locality %in% ebd$block_name ~ "block_level",
-    TRUE ~ NA_character_
+  rename(block_county = region) 
+                         
+# check if location is at the block level and mark it as such
+ebd <- ebd %>%
+  mutate(is_block_level = ifelse(ebd$locality %in% ebd$block_name, 
+                                 TRUE, FALSE))
+
+# add a state identifier to each atlas_block code
+ebd <- ebd %>%
+  mutate(atlas_block = paste(
+    str_extract(ebd$state_code[!is.na(ebd$state_code)], "(?<=-).+"), 
+    ebd$atlas_block[!is.na(ebd$atlas_block)], 
+    sep = "_"
   ))
 
 # o Add atlaser info ----------------------------------------------------------
@@ -201,16 +220,16 @@ rm(indx, cols)
 ebd <- ebd %>%
   mutate(ebird_dawn = sunrise - hms::as_hms(40*60),
          ebird_dusk = sunset + hms::as_hms(20*60),
-         nocturnal = ifelse(datetime <= ebird_dawn |
-                              datetime >= ebird_dusk,
-                            "nocturnal", "diurnal"))
+         is_nocturnal = ifelse(datetime <= ebird_dawn |
+                                 datetime >= ebird_dusk,
+                               TRUE, FALSE))
 
 # datetime without time is assumed to be 0:00, which would be interpreted as
 # nocturnal. Change these to NAs.
-ebd$nocturnal[is.na(ebd$time_observations_started)] <- NA_character_
+ebd$is_nocturnal[is.na(ebd$time_observations_started)] <- NA_character_
 
 # check there are the same number of NA values in each column
-sum(is.na(ebd$time_observations_started)) == sum(is.na(ebd$nocturnal))
+sum(is.na(ebd$time_observations_started)) == sum(is.na(ebd$is_nocturnal))
 
 # change the checklist's designation to diurnal if it extends past dawn, since
 # the dawn chorus is so active that this will skew any exploration of 
@@ -218,12 +237,12 @@ sum(is.na(ebd$time_observations_started)) == sum(is.na(ebd$nocturnal))
 notna <- which(!is.na(ebd$duration_minutes) &
                  !is.na(ebd$time_observations_started))
 
-indx <- which(ebd$nocturnal[notna] == "nocturnal" &
+indx <- which(ebd$is_nocturnal[notna] == TRUE &
                 ms(paste(ebd$duration_minutes[notna], 0)) > 
                 abs(as_datetime(ebd$ebird_dawn[notna]) -
                       as_datetime(ebd$datetime[notna])))
 
-ebd[indx, "nocturnal"] <- "diurnal"
+ebd[indx, "is_nocturnal"] <- FALSE
 
 rm(indx, notna)
 
@@ -249,7 +268,7 @@ bba3_di <- bba3_di[! duplicated(bba3_di$link), ]
 
 # remove incomplete and nocturnal checklists
 bba3_di <- bba3_di %>% filter(all_species_reported == TRUE &
-                                nocturnal == "diurnal" &
+                                is_nocturnal == FALSE &
                                 protocol_type %in% protocol)
 
 # sum effort by block
@@ -264,7 +283,7 @@ bba3_di <- bba3_di[! duplicated(bba3_di$block_name), ]
 # calculate nocturnal effort
 # remove incomplete and diurnal checklists
 bba3_noc <- bba3[! duplicated(bba3$link), ] %>% 
-  filter(nocturnal == "nocturnal" &
+  filter(is_nocturnal == TRUE &
            all_species_reported == TRUE &
            protocol_type %in% protocol) %>%
   group_by(block_name) %>%
@@ -304,7 +323,7 @@ bba3 <- bba3 %>%
 # filter out uncoded checklists from portal dataset
 ebdbba3 <- bba3 %>% group_by(checklist_id) %>%
   filter(any(breeding_category %in% breeding) | 
-           nocturnal == "nocturnal") 
+           is_nocturnal == TRUE) 
 # 734956 observations
 
 # filter out portal observations, non-breeding code observations from 
