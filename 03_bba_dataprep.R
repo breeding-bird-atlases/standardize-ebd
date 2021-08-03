@@ -1,5 +1,5 @@
 # 20201002
-## updated 20210721
+## updated 20210730
 # when updated ebird data are available use this to standardize the file and
 # add pertinent columns.
 
@@ -24,6 +24,10 @@ num <- as.integer(sapply(month,
 
 num <- ifelse(nchar(num) == 1, paste0(0, num), num)
 
+# read in a file with internal and external breeding codes
+codes <- read.csv(here("data", "ebird", "0_metadata",
+                       "ebird_internal_codes.csv"))
+
 # read ebd files using the auk package, so that subspecies are lumped, 
 # non-taxa are filtered out, and group checklists are put together.
 ## Maryland data
@@ -41,13 +45,9 @@ ebddc <- read_ebd(here("data", "ebird", "1_raw",
 sens <- read_ebd(here("data", "ebird", "1_raw",
                       "ebd_sensitive_relSep-2020_MDDC_BBA.txt"))
 
-## Zero-count observations
-zero_spp <- read.csv(here("data", "ebird", "1_raw",
-                          "MDDC zero-species lists 20210128.csv"))
-
 # pull in files with additional pertinent info
 ## Block names and numbers
-blocks <- read.csv(here("data", "bba3", "bba3_block_list.csv"))
+blocks <- read.csv(here("data", "bba3", "block_metadata.csv"))
 
 ## Atlaser names and contact info
 # read the most current list of bba3 atlasers
@@ -62,28 +62,140 @@ blocks <- read.csv(here("data", "bba3", "bba3_block_list.csv"))
 # read the selected file
 atlasers <- read.csv(here("data", "bba3", file))
 
-rm(num, atlaser_files, file)
+## eBird monthly automated special downloads
+# get the pertinent files and their metadata
+details <- file.info(list.files(here("data", "ebird", "1_raw"), 
+           pattern = c("Maryland_DC BBA", "tsv"), full.names = TRUE))
 
-# Join raw data ---------------------------------------------------------------
+# sort by most recently created and keept the most recent five, since eBird
+# only sends five downloads each month.
+details <- head(details[order(details$ctime, decreasing = TRUE),], n = 5)
 
-# join md, dc, and sens files together
-ebd <- ebdmd %>%
-  full_join(., ebddc) %>%
-  full_join(., sens)
-# 4,688,015 observations
+# get friendly names from the files
+spcl <- row.names(details) %>%
+  str_extract("(?<=Maryland_DC BBA )(.+)(?=-2021)") %>%
+  str_to_lower() %>%
+  str_replace_all(c(" " = "_", "-" = "_"))
 
-# format and join zero-species checklists
-ebd <- zero_spp %>% 
+# read in the data
+for(i in 1:nrow(details)) {
+  assign(spcl[i],
+  read.delim(row.names(details)[i], quote = ""))
+}
+
+# standardize the file names
+effort <- effort %>% 
+  rename(atlas_block = block_code,
+         project_code = proj_period_id,
+         nocturnal_hrs = nocturnal_hours,
+         total_hrs = total_hours,
+         diurnal_hrs = diurnal_hours) %>%
+  mutate(project_code = str_replace(project_code, 
+                                    "EBIRD_ATL_MD_DC_2020", 
+                                    "EBIRD_ATL_MD_DC"),
+         total_hrs = as.numeric(str_replace(total_hrs, ",", "")),
+         diurnal_hrs = as.numeric(str_replace(diurnal_hrs, ",", "")))
+
+summary <- summary %>%
+  rename(atlas_block = region_code,
+         breeding_category = category_code)
+
+user_hidden_records <- user_hidden_records %>%
+  rename(global_unique_identifier = obs_id,
+         sampling_event_identifier = sub_id,
+         common_name = primary_com_name,
+         approved_checklist = sub_reviewstatus,
+         approved = obs_reviewstatus,
+         reason = reason_code,
+         species_comments = obs_comments,
+         group_identifier = group_id,
+         protocol_code = protocol_id,
+         locality_id = loc_id,
+         atlas_block = region_code,
+         state_code = subnational1_code,
+         observer_id = user_id,
+         all_species_reported = all_obs_reported,
+         trip_comments = sub_comments,
+         datetime = to_char,
+         number_observers = num_observers) %>%
+  mutate(global_unique_identifier = 
+           paste0("URN:CornellLabOfOrnithology:EBIRD:", 
+                  global_unique_identifier),
+         observation_count = str_replace(how_many_atmost, 
+                                         "999,999,999", "X"),
+         atlaser_name = paste(first_name, last_name),
+         duration_minutes = duration_hrs*60,
+         observation_time = ifelse(obs_time_valid == 1,
+                                   hms::as_hms(as_datetime(datetime)),
+                                   NA_POSIXct_),
+         observation_date = as_date(datetime)) %>%
+  left_join(., codes, by = c("aux_code" = "internal")) %>%
+  rename(breeding_code = public) %>%
+  select(!c(how_many_atleast,
+            how_many_atmost,
+            aux_code,
+            value,
+            first_name,
+            last_name))
+
+zero_count_records <- zero_count_records %>%
+  rename(global_unique_identifier = obs_id,
+         sampling_event_identifier = sub_id,
+         common_name = primary_com_name,
+         approved = valid,
+         species_comments = obs_comments,
+         group_identifier = group_id,
+         protocol_code = protocol_id,
+         locality_id = loc_id,
+         atlas_block = region_code,
+         state_code = subnational1_code,
+         observer_id = user_id,
+         all_species_reported = all_obs_reported,
+         trip_comments = sub_comments,
+         datetime = to_char,
+         number_observers = num_observers) %>%
+  mutate(global_unique_identifier = 
+           paste0("URN:CornellLabOfOrnithology:EBIRD:", 
+                  global_unique_identifier),
+         observation_count = str_replace(how_many_atmost, 
+                                         "999,999,999", "X"),
+         atlaser_name = paste(first_name, last_name),
+         duration_minutes = duration_hrs*60,
+         observation_time = ifelse(obs_time_valid == 1,
+                                   hms::as_hms(as_datetime(datetime)),
+                                   NA_POSIXct_),
+         observation_date = as_date(datetime)) %>%
+  left_join(., codes, by = c("aux_code" = "internal")) %>%
+  rename(breeding_code = public) %>%
+  select(!c(how_many_atleast,
+            how_many_atmost,
+            aux_code,
+            value,
+            first_name,
+            last_name))
+
+zero_species_checklists <- zero_species_checklists %>%
   rename(project_code = proj_id,
          sampling_event_identifier = sub_id,
          group_identifier = group_id,
-         observation_date = to_char,
          atlas_block = block) %>%
-  mutate(observation_date = as_date(mdy(observation_date)),
-         duration_minutes = duration_hrs*60) %>%
-  bind_rows(ebd, .)
+  mutate(observation_date = as_date(to_char, format = "%m/%d/%y"))
 
-rm(ebdmd, ebddc, sens, zero_spp)
+rm(num, atlaser_files, file, details, spcl)
+
+# Join raw data ---------------------------------------------------------------
+
+# join md, dc, sens, hidden, and zero files together
+ebd <- ebdmd %>%
+  full_join(., ebddc) %>%
+  full_join(., sens) %>%
+  full_join(., user_hidden_records) %>%
+  full_join(., zero_species_checklists) %>%
+  full_join(., zero_count_records)
+# 4,688,015 observations
+
+rm(ebdmd, ebddc, sens, user_hidden_records, zero_species_checklists, 
+   zero_count_records)
 
 # Standardize dataset ---------------------------------------------------------
 # change NAs in breeding_category column to C1
@@ -111,40 +223,20 @@ ebd$breeding_category[is.na(ebd$breeding_category)] <- "C1"
 ebd$breeding_category[which(ebd$breeding_code == "PE")] <- "C3"
 
 # o Add block info ------------------------------------------------------------
-# edit the block codes to match partial blocks in ebird, which start with "o"
-partialblocks <- unlist(unique(ebd[grep("o", ebd$atlas_block), "atlas_block"]))
-
-partialblocks <- gsub("o", "", partialblocks)
-
-blocks[which(blocks$usgs_block_code %in% partialblocks), "usgs_block_code"] <- 
-  paste0("o", 
-         blocks[which(blocks$usgs_block_code %in% partialblocks), 
-                "usgs_block_code"])
-
-rm(partialblocks)
-
 # add block names to atlas_block ID
 # add block county (county is the county the observation was in, not the county
 # the block is considered to be in, which is based off the block centroid).
 ebd <- ebd %>%
-  left_join(., blocks[,c("usgs_block_code", 
+  left_join(., blocks[,c("atlas_block", 
                          "block_name",
                          "region")], 
-            by = c("atlas_block" = "usgs_block_code")) %>%
+            by = "atlas_block") %>%
   rename(block_county = region) 
-                         
+
 # check if location is at the block level and mark it as such
 ebd <- ebd %>%
-  mutate(is_block_level = ifelse(ebd$locality %in% ebd$block_name, 
+  mutate(is_block_level = ifelse(ebd$locality_id %in% blocks$locality_id, 
                                  TRUE, FALSE))
-
-# add a state identifier to each atlas_block code
-ebd <- ebd %>%
-  mutate(atlas_block = paste(
-    str_extract(ebd$state_code[!is.na(ebd$state_code)], "(?<=-).+"), 
-    ebd$atlas_block[!is.na(ebd$atlas_block)], 
-    sep = "_"
-  ))
 
 # o Add atlaser info ----------------------------------------------------------
 # add observer names to observer_id 
@@ -212,7 +304,7 @@ indx <- which(ebd$datetime %within% dst &
 
 cols <- c("sunrise", "nautical_dawn", "sunset", "nautical_dusk")
 
-ebd[indx, cols]<- lapply(ebd[indx, cols], function(x) x + hours(1))
+ebd[indx, cols] <- lapply(ebd[indx, cols], function(x) x + hours(1))
 
 rm(indx, cols)
 
@@ -226,7 +318,7 @@ ebd <- ebd %>%
 
 # datetime without time is assumed to be 0:00, which would be interpreted as
 # nocturnal. Change these to NAs.
-ebd$is_nocturnal[is.na(ebd$time_observations_started)] <- NA_character_
+ebd$is_nocturnal[is.na(ebd$time_observations_started)] <- NA
 
 # check there are the same number of NA values in each column
 sum(is.na(ebd$time_observations_started)) == sum(is.na(ebd$is_nocturnal))
@@ -244,7 +336,7 @@ indx <- which(ebd$is_nocturnal[notna] == TRUE &
 
 ebd[indx, "is_nocturnal"] <- FALSE
 
-rm(indx, notna)
+rm(indx, notna, dst)
 
 # o Add duration hours --------------------------------------------------------
 ebd$duration_hrs <- ebd$duration_minutes/60
@@ -335,6 +427,18 @@ ebd_code <- ebd %>%
            ! is.na(breeding_code) & breeding_code != "F")
 
 # Save datasets ---------------------------------------------------------------
+# export the standardized effort dataset
+write.csv(effort, file = here("data", "ebird", "2_standardized",
+                              paste0("mddcbba3_effort_", month, year,
+                                     "_standardized.csv")),
+          row.names = FALSE)
+
+# export the standardized summary dataset
+write.csv(summary, file = here("data", "ebird", "2_standardized",
+                               paste0("mddcbba3_summary_", month, year,
+                                      "_standardized.csv")),
+          row.names = FALSE)
+
 # export the file of bba3 results
 write.table(bba3, file = here("data", "ebird", "2_standardized",
                               paste0("mddcbba3_", month, year,
