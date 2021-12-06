@@ -1,5 +1,6 @@
 # 20201002
 ## updated 20210730
+## updated 20211204
 # when updated ebird data are available use this to standardize the file and
 # add pertinent columns.
 
@@ -8,46 +9,33 @@ library(here)
 library(dplyr)
 library(stringr)
 library(lubridate)
+library(sf)
 library(suncalc)
 
 # Import data -----------------------------------------------------------------
 # update month and year to the most recently downloaded date
 ## eg a download from Sept 15 would be data up to Aug 31, use "aug" as month
-month <- "jun"
+month <- "oct"
 year <- 2021
 
-# ebd downloads are named based on the date range of the data request
-# convert the month object to a number and make sure it is two digits (ie
-# 10, 11, 12, or has a zero in front of it)
-num <- as.integer(sapply(month, 
-                         function(x) grep(paste0("(?i)", x), month.abb))) + 1
-
-num <- ifelse(nchar(num) == 1, paste0(0, num), num)
-
-# read in a file with internal and external breeding codes
+# pull in files with additional pertinent info
+## eBird's internal and external breeding codes
 codes <- read.csv(here("data", "ebird", "0_metadata",
                        "ebird_internal_codes.csv"))
 
-# read ebd files using the auk package, so that subspecies are lumped, 
-# non-taxa are filtered out, and group checklists are put together.
-## Maryland data
-ebdmd <- read_ebd(here("data", "ebird", "1_raw", 
-                       paste0("ebd_US-MD_202001_2021", num, "_rel", 
-                              str_to_title(month), "-", year, ".txt")))
-
-## DC data
-ebddc <- read_ebd(here("data", "ebird", "1_raw", 
-                       paste0("ebd_US-DC_202001_2021", num, "_rel", 
-                              str_to_title(month), "-", year, ".txt")))
-
-# pull in special downloads
-## Sensitive species
-sens <- read_ebd(here("data", "ebird", "1_raw",
-                      "ebd_sensitive_relSep-2020_MDDC_BBA.txt"))
-
-# pull in files with additional pertinent info
 ## Block names and numbers
 blocks <- read.csv(here("data", "bba3", "block_metadata.csv"))
+
+## Species list
+species <- read.csv(here("data", "ebird", "0_metadata",
+                         "eBird_Taxonomy_v2021.csv")) %>%
+  select(taxonomic_order = ï..TAXON_ORDER, 
+         common_name = PRIMARY_COM_NAME, 
+         scientific_name = SCI_NAME)
+
+## eBird protocol codes and types
+protocols <- read.csv(here("data", "ebird", "0_metadata",
+                           "ebird_protocol_codes.csv"))
 
 ## Atlaser names and contact info
 # read the most current list of bba3 atlasers
@@ -62,12 +50,58 @@ blocks <- read.csv(here("data", "bba3", "block_metadata.csv"))
 # read the selected file
 atlasers <- read.csv(here("data", "bba3", file))
 
+# ebd downloads are named based on the date range of the data request
+# convert the month object to a number and make sure it is two digits (ie
+# 10, 11, 12, or has a zero in front of it).
+num <- as.integer(sapply(month, 
+                         function(x) grep(paste0("(?i)", x), month.abb))) + 1
+
+num <- ifelse(nchar(num) == 1, paste0(0, num), num)
+
+# read ebd files using the auk package, so that subspecies are lumped, 
+# non-taxa are filtered out (rollup = TRUE), and duplicate group checklists 
+# are not removed (unique = FALSE; if unique = TRUE an additional column, 
+# checklist_id, will be created that does not exist otherwise).
+## Maryland data
+ebdmd <- read_ebd(here("data", "ebird", "1_raw", 
+                       paste0("ebd_US-MD_202001_2021", num, "_rel", 
+                              str_to_title(month), "-", year, ".txt")),
+                  rollup = TRUE, unique = FALSE)
+
+## DC data
+ebddc <- read_ebd(here("data", "ebird", "1_raw", 
+                       paste0("ebd_US-DC_202001_2021", num, "_rel", 
+                              str_to_title(month), "-", year, ".txt")),
+                  rollup = TRUE, unique = FALSE)
+
+## check column names against each other
+if(any(setequal(colnames(ebdmd), colnames(ebddc)) == FALSE)) {
+  print(c(setdiff(colnames(ebddc), colnames(ebdmd)),
+          setdiff(colnames(ebdmd), colnames(ebddc)))) &
+    stop("Column names do not match")
+}
+
+# pull in special downloads
+## Sensitive species
+sens <- read_ebd(here("data", "ebird", "1_raw",
+                      "ebd_sensitive_relJul-2021_MDDC_BBA.txt"),
+                 rollup = TRUE, unique = FALSE)
+
+# check sens column names against the ebd column names
+if(any(setequal(colnames(sens), colnames(ebdmd)) == FALSE)) {
+  print(c(setdiff(colnames(sens), colnames(ebdmd)),
+          setdiff(colnames(ebdmd), colnames(sens)))) &
+    stop("Column names do not match")
+}
+
+sens <- mutate(sens, data_origin = "sensitive_sp")
+
 ## eBird monthly automated special downloads
 # get the pertinent files and their metadata
 details <- file.info(list.files(here("data", "ebird", "1_raw"), 
            pattern = c("Maryland_DC BBA", "tsv"), full.names = TRUE))
 
-# sort by most recently created and keept the most recent five, since eBird
+# sort by most recently created and keep the most recent five, since eBird
 # only sends five downloads each month.
 details <- head(details[order(details$ctime, decreasing = TRUE),], n = 5)
 
@@ -83,103 +117,197 @@ for(i in 1:nrow(details)) {
   read.delim(row.names(details)[i], quote = ""))
 }
 
-# standardize the file names
+# standardize the files
+## check the column names to make sure they're what is expected
+checkcols <- read.csv(here("data", "bba3", 
+                           "ebird_autodownloads_column_names_dec2021.csv"))
+
+# get the column names from the imported dataframes
+name_list <- lapply(list(effort = effort,
+                         summary = summary,
+                         user_hidden_records = user_hidden_records,
+                         zero_count_records = zero_count_records,
+                         zero_species_checklists = zero_species_checklists), 
+                    colnames)
+
+# check them against the names on file
+for (x in unique(checkcols$dataset)) {
+  if(any(setequal(name_list[[x]],
+                  checkcols$column_name[checkcols$dataset == x])) == FALSE) {
+    print(c(setdiff(name_list[[x]],
+                    checkcols$column_name[checkcols$dataset == x]))) &
+      stop("Unexpected column names")
+  }
+}
+
+# get a missing county for any set of observations with lat/lon
+## df = dataframe of coordinates; must be at least two columns of x and y
+## map_sf = a simple feature object applicable to the area covered by df
+## map_dsn = (if no map_sf) data source of shapefile applicable to the area 
+## covered by df.
+## map_layer = (if no map_sf) shapefile layer
+## map_col = column in shapefile that contains county name
+## crs = spatial projection; default is wgs84
+## lon = name of the column in df containing x (longitude)
+## lat = name of the column in df containing y (latitude)
+find_county <- function(df, map_dsn, map_layer, map_sf = NULL, 
+                        map_col = "NAME", crs = 4326,
+                        lon = "longitude", lat = "latitude") {
+  if(any(class(map_sf) %in% c("sf", "sfc", "sfg"))) {
+    census_county <- sf::st_transform(map_sf, crs = crs)
+  } else {
+    census_county <- sf::st_read(map_dsn, map_layer) %>%
+      sf::st_transform(crs = crs)
+  }
+  points <- sf::st_as_sf(df, coords = c(lon, lat), crs = crs) 
+  
+  counties_points_in <- sf::st_intersects(points, census_county)
+  
+  county <- NA
+  
+  for(i in seq_along(df[, 1])) {
+    county[i] <- data.frame(census_county)[counties_points_in[[i]], map_col]
+  }
+  return(county)
+} 
+
+census_county <- st_read(here("data", "mapping", "census_county_boundaries"),
+                         "census_county_boundaries_mddc")
+
+# get a single observation count from a max/min range
+get_abundance <- function(df, min, max) {
+  for(i in seq_along(df[, min])) {
+    if(df[i, min] ==
+       df[i, max]) {
+      x[i] <- df[i, min]
+    } else {
+      x[i] <- NA_integer_
+    }
+  }
+  x
+}
+
+# format the datetime column
+format_datetime <- function(x) {
+  as.character(parse_date_time(x, c("%y%m%d %H%M%S", "%m%d%y %H%M%S"), 
+                               tz = "EST", truncated = 3))
+}
+
+## these files contain commas in any numbers >999
 effort <- effort %>% 
-  rename(atlas_block = block_code,
-         project_code = proj_period_id,
+  left_join(., select(blocks, 
+                      atlas_block, block_name, dnr_block_name, region)) %>%
+  rename(project_code = proj_period_id,
          nocturnal_hrs = nocturnal_hours,
          total_hrs = total_hours,
-         diurnal_hrs = diurnal_hours) %>%
-  mutate(project_code = str_replace(project_code, 
-                                    "EBIRD_ATL_MD_DC_2020", 
+         diurnal_hrs = diurnal_hours,
+         block_county = region) %>%
+  mutate(project_code = str_replace(project_code,
+                                    "EBIRD_ATL_MD_DC_202[0-4]", 
                                     "EBIRD_ATL_MD_DC"),
-         total_hrs = as.numeric(str_replace(total_hrs, ",", "")),
-         diurnal_hrs = as.numeric(str_replace(diurnal_hrs, ",", "")))
+         across(ends_with("hrs"), function(x) {
+           as.numeric(str_replace(x, ",", ""))
+         }))
+
+if(any(!unique(effort$project_code) %in% "EBIRD_ATL_MD_DC")) {
+  print(unique(effort$project_code)) &
+          stop("Unexpected project IDs")
+}
 
 summary <- summary %>%
-  rename(atlas_block = region_code,
-         breeding_category = category_code)
+  left_join(., select(blocks, 
+                      atlas_block, block_name, dnr_block_name, region)) %>%
+  rename(breeding_category = category_code) %>%
+  mutate(project_code = "EBIRD_ATL_MD_DC")
 
 user_hidden_records <- user_hidden_records %>%
-  rename(global_unique_identifier = obs_id,
-         sampling_event_identifier = sub_id,
-         common_name = primary_com_name,
+  left_join(., species) %>%
+  left_join(., protocols) %>%
+  rename(project_code = proj_period_id,
+         category = taxon_category,
          approved_checklist = sub_reviewstatus,
-         approved = obs_reviewstatus,
-         reason = reason_code,
-         species_comments = obs_comments,
-         group_identifier = group_id,
-         protocol_code = protocol_id,
-         locality_id = loc_id,
-         atlas_block = region_code,
-         state_code = subnational1_code,
-         observer_id = user_id,
-         all_species_reported = all_obs_reported,
-         trip_comments = sub_comments,
+         aux_code = breeding_code,
+         aux_behav = behavior_code,
          datetime = to_char,
-         number_observers = num_observers) %>%
+         last_edited_date = last_edited_dt,
+         locality_type = loc_type) %>%
   mutate(global_unique_identifier = 
            paste0("URN:CornellLabOfOrnithology:EBIRD:", 
                   global_unique_identifier),
-         observation_count = str_replace(how_many_atmost, 
-                                         "999,999,999", "X"),
+         county = find_county(., map_sf = census_county),
+         observation_count = get_abundance(., "how_many_atleast", 
+                                           "how_many_atmost"),
          atlaser_name = paste(first_name, last_name),
+         observer_id = str_replace_all(observer_id, "USER", "obsr"),
          duration_minutes = duration_hrs*60,
-         observation_time = ifelse(obs_time_valid == 1,
-                                   hms::as_hms(as_datetime(datetime)),
-                                   NA_POSIXct_),
-         observation_date = as_date(datetime)) %>%
+         across(contains("date"), format_datetime),
+         time_observations_started = 
+           ifelse(obs_time_valid == 1,
+                  as.character(hms::as_hms(as_datetime(datetime))), 
+                  NA_POSIXct_),
+         observation_date = as_date(datetime),
+         data_origin = "hidden_obs") %>%
   left_join(., codes, by = c("aux_code" = "internal")) %>%
   rename(breeding_code = public) %>%
-  select(!c(how_many_atleast,
+  left_join(., codes, by = c("aux_behav" = "internal")) %>%
+  rename(behavior_code = public) %>%
+  select(!c(orig_species_code,
+            how_many_atleast,
             how_many_atmost,
             aux_code,
-            value,
+            aux_behav,
             first_name,
-            last_name))
+            last_name,
+            checklist_id))
 
 zero_count_records <- zero_count_records %>%
-  rename(global_unique_identifier = obs_id,
-         sampling_event_identifier = sub_id,
-         common_name = primary_com_name,
-         approved = valid,
-         species_comments = obs_comments,
-         group_identifier = group_id,
-         protocol_code = protocol_id,
-         locality_id = loc_id,
-         atlas_block = region_code,
-         state_code = subnational1_code,
-         observer_id = user_id,
-         all_species_reported = all_obs_reported,
-         trip_comments = sub_comments,
-         datetime = to_char,
-         number_observers = num_observers) %>%
+  left_join(., species) %>%
+  left_join(., protocols) %>%
+  rename(project_code = proj_period_id,
+         category = taxon_category,
+         aux_code = breeding_code,
+         aux_behav = behavior_code,
+         datetime = obs_dt,
+         locality_type = loc_type) %>%
   mutate(global_unique_identifier = 
            paste0("URN:CornellLabOfOrnithology:EBIRD:", 
                   global_unique_identifier),
-         observation_count = str_replace(how_many_atmost, 
-                                         "999,999,999", "X"),
+         observation_count = get_abundance(., "how_many_atleast", 
+                                           "how_many_atmost"),
          atlaser_name = paste(first_name, last_name),
          duration_minutes = duration_hrs*60,
-         observation_time = ifelse(obs_time_valid == 1,
-                                   hms::as_hms(as_datetime(datetime)),
-                                   NA_POSIXct_),
-         observation_date = as_date(datetime)) %>%
-  left_join(., codes, by = c("aux_code" = "internal")) %>%
+         across(contains("date"), format_datetime),
+         observer_id = str_replace_all(observer_id, "USER", "obsr"),
+         time_observations_started = 
+           ifelse(obs_time_valid == 1,
+                  as.character(hms::as_hms(as_datetime(datetime))),
+                  NA_POSIXct_),
+         observation_date = as_date(datetime),
+         data_origin = "zero_count") %>%
+  left_join(., codes, by = c("aux_code" = "internal")) %>% 
   rename(breeding_code = public) %>%
+  left_join(., codes, by = c("aux_behav" = "internal")) %>%
+  rename(behavior_code = public) %>%
   select(!c(how_many_atleast,
             how_many_atmost,
             aux_code,
-            value,
+            aux_behav,
             first_name,
             last_name))
 
 zero_species_checklists <- zero_species_checklists %>%
-  rename(project_code = proj_id,
-         sampling_event_identifier = sub_id,
-         group_identifier = group_id,
-         atlas_block = block) %>%
-  mutate(observation_date = as_date(to_char, format = "%m/%d/%y"))
+  left_join(., protocols) %>%
+  rename(datetime = observation_date,
+         is_nocturnal = nocturnal,
+         number_observers = num_observers) %>%
+  mutate(across(contains("date"), format_datetime),
+         time_observations_started = as.character(
+           hms::as_hms(as_datetime(datetime))
+         ),
+         observation_date = as_date(datetime),
+         duration_minutes = duration_hrs*60,
+         is_nocturnal = ifelse(is_nocturnal == "t", TRUE, FALSE),
+         data_origin = "zero_species")
 
 rm(num, atlaser_files, file, details, spcl)
 
@@ -188,11 +316,20 @@ rm(num, atlaser_files, file, details, spcl)
 # join md, dc, sens, hidden, and zero files together
 ebd <- ebdmd %>%
   full_join(., ebddc) %>%
+  mutate(data_origin = "ebd") %>%
   full_join(., sens) %>%
   full_join(., user_hidden_records) %>%
   full_join(., zero_species_checklists) %>%
-  full_join(., zero_count_records)
+  full_join(., zero_count_records) %>%
+  mutate(project_code = str_replace(project_code,
+                                    "EBIRD_ATL_MD_DC_202[0-4]", 
+                                    "EBIRD_ATL_MD_DC"))
 # 4,688,015 observations
+
+if(any(!unique(ebd$project_code) %in% "EBIRD_ATL_MD_DC")) {
+  print(unique(ebd$project_code)) &
+    stop("Unexpected project IDs")
+}
 
 rm(ebdmd, ebddc, sens, user_hidden_records, zero_species_checklists, 
    zero_count_records)
@@ -205,6 +342,7 @@ rm(ebdmd, ebddc, sens, user_hidden_records, zero_species_checklists,
 ## whether the location was submitted at the block level
 ## atlaser name
 ## checklist link
+## julian date
 ## sunset/sunrise/nautical_dawn/nautical_dusk
 ## ebird sunset/sunrise (sunset +20 min, sunrise -40 min)
 ## whether checklist is defined as nocturnal or diurnal
@@ -253,9 +391,11 @@ ebd$atlaser_name <- unlist(lapply(strsplit(ebd$observer_id, ","),
                                   }))
 
 # o Add a checklist link ------------------------------------------------------
+# o Add Julian date -----------------------------------------------------------
 ebd <- ebd %>%
   mutate(link = paste0("https://ebird.org/atlasmddc/checklist/",
-                       sub("\\,.*", "", ebd$sampling_event_identifier)))
+                       sub("\\,.*", "", ebd$sampling_event_identifier)),
+         jdate = yday(observation_date))
 
 # o Add daylight info ---------------------------------------------------------
 # label nocturnal checklists
@@ -329,14 +469,12 @@ sum(is.na(ebd$time_observations_started)) == sum(is.na(ebd$is_nocturnal))
 notna <- which(!is.na(ebd$duration_minutes) &
                  !is.na(ebd$time_observations_started))
 
-indx <- which(ebd$is_nocturnal[notna] == TRUE &
-                ms(paste(ebd$duration_minutes[notna], 0)) > 
-                abs(as_datetime(ebd$ebird_dawn[notna]) -
-                      as_datetime(ebd$datetime[notna])))
+ebd[which(ebd$is_nocturnal[notna] == TRUE &
+            ms(paste(ebd$duration_minutes[notna], 0)) > 
+            abs(as_datetime(ebd$ebird_dawn[notna]) -
+                  as_datetime(ebd$datetime[notna]))), "is_nocturnal"] <- FALSE
 
-ebd[indx, "is_nocturnal"] <- FALSE
-
-rm(indx, notna, dst)
+rm(notna, dst)
 
 # o Add duration hours --------------------------------------------------------
 ebd$duration_hrs <- ebd$duration_minutes/60
