@@ -1,0 +1,24 @@
+protocol_code,protocol_type
+P22,Traveling
+P21,Stationary
+P62,Historical
+P20,Incidental
+P23,Area
+P33,Banding
+P60,eBird Pelagic Protocol
+P54,Nocturnal Flight Call Count
+P52,Oiled Birds
+P48,Random
+P59,TNC California Waterbird Count
+P46,CWC Point Count
+P47,CWC Area Search
+P80,CWC Traveling Count
+P41,Rusty Blackbird Spring Migration Blitz
+P69,California Brown Pelican Survey
+P73,PROALAS Point Count (2 Bands)
+P81,PROALAS Mini-transect
+P82,PROALAS Point Count (3 Bands)
+P83,OBF
+P58,Audubon Coastal Bird Survey
+P74,International Shorebird Survey (ISS)
+P84,Migratory Shorebird Protocol
