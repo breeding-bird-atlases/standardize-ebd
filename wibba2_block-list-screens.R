@@ -259,7 +259,7 @@ uncoded <- anti_join(bba2, coded_spp) %>%
 uncoded_summary <- uncoded %>%
   pivot_wider(names_from = observation_season,
               values_from = n_seasonal_occurrences) %>%
-group_by(common_name) %>%
+group_by(common_name, block_name) %>%
   mutate(across(breeding:earlyseason, sum, na.rm = TRUE)) %>%
   distinct(common_name,
            n_occurrences,
@@ -269,7 +269,8 @@ group_by(common_name) %>%
            postbreeding,
            lateseason,
            block_name,
-           block_county) 
+           block_county)  %>% 
+ungroup()
 
 block_eval <- unique(uncoded$block_name)
 
