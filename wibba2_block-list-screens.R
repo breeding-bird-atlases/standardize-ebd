@@ -259,6 +259,8 @@ uncoded <- anti_join(bba2, coded_spp) %>%
 uncoded_summary <- uncoded %>%
   pivot_wider(names_from = observation_season,
               values_from = n_seasonal_occurrences) %>%
+group_by(common_name) %>%
+  mutate(across(breeding:earlyseason), sum, na.rm = TRUE) %>%
   distinct(common_name,
            n_occurrences,
            earlyseason,
