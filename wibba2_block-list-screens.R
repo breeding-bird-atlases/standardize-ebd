@@ -260,7 +260,11 @@ uncoded_summary <- uncoded %>%
   pivot_wider(names_from = observation_season,
               values_from = n_seasonal_occurrences) %>%
 group_by(common_name, block_name) %>%
-  mutate(across(breeding:earlyseason, sum, na.rm = TRUE)) %>%
+  mutate(across(c(earlyseason, 
+                prebreeding,
+                breeding,
+                postbreeding,
+                lateseason), sum, na.rm = TRUE)) %>%
   distinct(common_name,
            n_occurrences,
            earlyseason,
